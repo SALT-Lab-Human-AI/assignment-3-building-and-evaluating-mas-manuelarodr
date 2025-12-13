@@ -3,9 +3,10 @@
 
 system:
   name: "Multi-Agent Research Assistant"
-  topic: "HCI Research"  # Change this to your chosen topic
+  topic: "Ethical AI in Education"  # Change this to your chosen topic
   max_iterations: 10
   timeout_seconds: 300
+  max_turns: 8  # Maximum number of turns in RoundRobinGroupChat to prevent context length issues
 
 agents:
   planner:
@@ -13,7 +14,14 @@ agents:
     enabled: true
     # Custom system prompt (optional - leave empty to use default)
     # If provided, ensure it includes the handoff signal: "PLAN COMPLETE"
-    system_prompt: ""  # Empty = use default prompt
+    system_prompt: |
+      You are a research planner for Ethical AI in Education. Break down queries into actionable steps (150-200 words max).
+
+      **You have NO tools** - only create plans. The Researcher handles all searching.
+
+      Steps: 1) Analyze key concepts, 2) Determine source types (papers/web), 3) Suggest search queries/keywords, 4) Outline synthesis approach.
+
+      Provide numbered steps covering: what to gather, why relevant, questions to answer. End with "PLAN COMPLETE".
     # Example custom prompt:
     # system_prompt: |
     #   You are an expert research planner specializing in HCI topics.
@@ -21,12 +29,22 @@ agents:
     #   Focus on recent publications (last 5 years) and seminal works.
     #   After creating the plan, say "PLAN COMPLETE".
 
+
   researcher:
     role: "Evidence Gatherer"
     enabled: true
     # Custom system prompt (optional - leave empty to use default)
     # If provided, ensure it mentions tools and includes: "RESEARCH COMPLETE"
-    system_prompt: ""  # Empty = use default prompt
+    system_prompt: |
+      Researcher for Ethical AI in Education. Gather credible info from papers and web (200-300 words max).
+
+      **Tools work automatically** - describe what you need in natural language. No function calls.
+
+      **Select ONLY top 8 sources**: Prioritize by relevance score (web) or citations/recency (papers). Summarize findings from selected sources only.
+
+      Process: 1) Review plan, 2) State info needs (auto-searches), 3) Select 8 most relevant, 4) Extract key findings, 5) Note citation details.
+
+      Prefer recent (3-5 years), peer-reviewed sources. End with "RESEARCH COMPLETE".
     max_sources: 10
     # Example custom prompt:
     # system_prompt: |
@@ -40,20 +58,31 @@ agents:
     enabled: true
     # Custom system prompt (optional - leave empty to use default)
     # If provided, ensure it includes: "DRAFT COMPLETE"
-    system_prompt: ""  # Empty = use default prompt
-    # Example custom prompt:
-    # system_prompt: |
-    #   You are an academic writer specializing in HCI research.
-    #   Synthesize findings with proper APA citations.
-    #   Write in a clear, engaging style accessible to students.
-    #   After completing the draft, say "DRAFT COMPLETE".
+    system_prompt: |
+      Writer for Ethical AI in Education. Synthesize Researcher's findings into clear responses (400-600 words max).
+
+      **Structure**: Brief intro → logical sections → APA citations → References. Paraphrase, don't copy. Answer the query directly.
+
+      **Citation tools work automatically** - reference sources naturally (e.g., "Smith (2023) found..."). No function calls needed.
+
+      **Revision**: If Critic says "NEEDS REVISION", address all feedback. If "APPROVED - RESEARCH COMPLETE", you're done.
+
+      Use all sources from Researcher. Write clearly with defined technical terms.
+
 
   critic:
     role: "Quality Verifier"
     enabled: true
     # Custom system prompt (optional - leave empty to use default)
     # If provided, ensure it includes: "APPROVED - RESEARCH COMPLETE" or "NEEDS REVISION"
-    system_prompt: ""  # Empty = use default prompt
+    system_prompt: |
+      Peer reviewer for Ethical AI in Education. Evaluate Writer's output for quality, accuracy, completeness.
+
+      **Criteria**: Relevance to query, credible/well-cited sources, completeness, accuracy, clarity, synthesis, appropriate length (400-600 words).
+
+      **Review**: Check alignment with plan, verify citations, identify gaps/errors. Provide specific constructive feedback.
+
+      **End with**: "APPROVED - RESEARCH COMPLETE" (if quality meets standards) OR "NEEDS REVISION" (if significant issues).
     # Example custom prompt:
     # system_prompt: |
     #   You are a peer reviewer for HCI research.
@@ -64,17 +93,17 @@ agents:
 models:
   # Default model for agents (Groq)
   default:
-    provider: "vllm"
+    provider: "groq"
     name: "openai/gpt-oss-20b"
     temperature: 0.7
-    max_tokens: 2048
+    max_tokens: 1500  # Reduced to help prevent context overflow
 
   # Judge model for evaluation
   judge:
-    provider: "vllm"
-    name: "openai/gpt-oss-20b"
+    provider: "groq"
+    name: "openai/gpt-oss-20b"  # Use same model as agents for consistency
     temperature: 0.3
-    max_tokens: 1024
+    max_tokens: 2048  # Increased to prevent JSON truncation
 
 tools:
   web_search:
@@ -102,36 +131,141 @@ safety:
     - "misinformation"
     - "off_topic_queries"
 
-  # Response strategies
+  # Response strategies per validator
+  response_strategies:
+    # Input validators
+    input:
+      toxic_language:
+        action: "refuse"
+        severity: "high"
+        message: "I cannot process requests containing harmful or inappropriate language. Please rephrase your query in a respectful manner."
+
+      detect_pii:
+        action: "sanitize"
+        severity: "high"
+        message: "I've removed personally identifiable information from your query. Please resubmit without personal details."
+        allow_sanitized: true
+
+      prompt_injection:
+        action: "refuse"
+        severity: "high"
+        message: "I cannot process this request. Please provide a clear research question related to Ethical AI in Education."
+
+      off_topic:
+        action: "redirect"
+        severity: "medium"
+        message: "This system specializes in research on 'Ethical AI in Education'. Could you please rephrase your query to focus on this topic?"
+
+    # Output validators
+    output:
+      toxic_language:
+        action: "sanitize"
+        severity: "high"
+        message: "The response has been sanitized to remove inappropriate content."
+        fallback_to_refuse: true
+
+      detect_pii:
+        action: "sanitize"
+        severity: "high"
+        message: "Personal information has been redacted from the response."
+        redaction_marker: "[REDACTED]"
+
+      bias_check:
+        action: "sanitize"
+        severity: "medium"
+        message: "The response has been reviewed and adjusted to reduce potential bias."
+        warning_only: false
+
+      factual_consistency:
+        action: "refuse"
+        severity: "high"
+        message: "I cannot provide this response as it may contain inaccurate information. Please verify the sources."
+
+    # Default fallback strategy
+    default:
+      action: "refuse"
+      message: "I cannot process this request due to safety policies."
+
+  # Legacy response strategies (kept for backward compatibility)
   on_violation:
     action: "refuse"  # or "sanitize" or "redirect"
     message: "I cannot process this request due to safety policies."
 
 evaluation:
   enabled: true
-  num_test_queries: 10
+  num_test_queries: 8
+  test_queries_path: "data/test_queries.json"
 
-  # Judge criteria
+  # Multiple judge perspectives - at least 2 independent judging prompts
+  judges:
+    - name: "comprehensive_rubric"
+      description: "Comprehensive evaluation using detailed rubric covering all criteria"
+      weight: 0.5
+
+    - name: "ethical_expert"
+      description: "Evaluation from ethical AI in education expert perspective"
+      weight: 0.5
+
+  # Judge criteria - detailed descriptions for Ethical AI in Education
   criteria:
-    - name: "relevance"
+    - name: "relevance_and_coverage"
       weight: 0.25
-      description: "How relevant is the response to the query?"
+      description: |
+        Relevance & Coverage: Does the response directly and comprehensively address the query?
+        For Ethical AI in Education queries, this includes:
+        - Addressing all key aspects of the ethical question
+        - Covering relevant ethical principles, frameworks, or considerations
+        - Connecting concepts to educational contexts specifically
+        - Addressing stakeholder perspectives (students, educators, parents, institutions)
+        - Including practical implications and real-world applications
 
-    - name: "evidence_quality"
+    - name: "evidence_use_and_citation_quality"
       weight: 0.25
-      description: "Quality of citations and evidence used"
+      description: |
+        Evidence Use & Citation Quality: Are sources credible, relevant, and properly cited?
+        For Ethical AI in Education, this includes:
+        - Use of peer-reviewed academic sources on AI ethics, educational technology, or related fields
+        - Citation of relevant policy documents, guidelines, or frameworks (e.g., UNESCO, IEEE, FERPA)
+        - Proper APA-style citation formatting
+        - Integration of evidence to support claims
+        - Diversity of sources (academic, policy, case studies)
+        - Recency of sources when relevant (especially for rapidly evolving AI field)
 
-    - name: "factual_accuracy"
+    - name: "factual_accuracy_and_consistency"
       weight: 0.20
-      description: "Factual correctness and consistency"
+      description: |
+        Factual Accuracy & Consistency: Is the information correct and internally consistent?
+        This includes:
+        - Accurate representation of ethical principles, frameworks, and concepts
+        - Correct references to regulations, policies, or standards (e.g., FERPA, COPPA)
+        - Consistency in terminology and definitions throughout
+        - No contradictory statements
+        - Accurate representation of research findings or case studies
+        - Proper understanding of technical concepts related to AI ethics
 
     - name: "safety_compliance"
       weight: 0.15
-      description: "No unsafe or inappropriate content"
+      description: |
+        Safety Compliance: Does the response avoid unsafe or inappropriate content?
+        For Ethical AI in Education, this includes:
+        - No harmful, discriminatory, or biased content
+        - No misinformation about AI capabilities or limitations
+        - Appropriate handling of sensitive topics (student privacy, surveillance, etc.)
+        - Balanced perspectives that don't promote harmful practices
+        - Compliance with educational and ethical standards
 
-    - name: "clarity"
+    - name: "clarity_and_organization"
       weight: 0.15
-      description: "Clarity and organization of response"
+      description: |
+        Clarity & Organization: Is the response well-structured and easy to understand?
+        This includes:
+        - Clear introduction that addresses the query
+        - Logical organization with clear sections or subsections
+        - Smooth transitions between ideas
+        - Appropriate use of headings, lists, or formatting
+        - Clear, accessible language appropriate for the audience
+        - Concise yet comprehensive coverage (500-800 words ideal)
+        - Effective use of examples or case studies to illustrate points
 
 logging:
   level: "INFO"

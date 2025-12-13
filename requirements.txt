@@ -9,7 +9,7 @@ langchain-community
 groq
 openai
 
-guardrails-ai
+guardrails-ai  # Note: Validators from Guardrails Hub must be installed separately
 nemoguardrails
 
 tavily-python
@@ -35,5 +35,4 @@ black
 # Pre-commit hooks for security and code quality
 pre-commit
 detect-secrets
-gitleaks
 bandit

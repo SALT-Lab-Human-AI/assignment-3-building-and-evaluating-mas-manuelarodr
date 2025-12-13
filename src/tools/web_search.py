@@ -11,15 +11,18 @@ import os
 import logging
 import asyncio
 
+# Set up logger for web search
+logger = logging.getLogger("tools.web_search")
+
 
 class WebSearchTool:
     """
     Tool for searching the web for information.
-    
+
     Supports:
     - Tavily API (has free tier)
     - Brave Search API
-    
+
     The tool formats results in a consistent structure regardless of provider.
     """
 
@@ -62,7 +65,7 @@ class WebSearchTool:
             Each result has format:
             {
                 "title": str,
-                "url": str, 
+                "url": str,
                 "snippet": str,
                 "score": float (0-1),
                 "published_date": Optional[str],
@@ -89,14 +92,14 @@ class WebSearchTool:
         """
         try:
             from tavily import TavilyClient
-            
+
             client = TavilyClient(api_key=self.api_key)
-            
+
             # Tavily search parameters
             search_depth = kwargs.get("search_depth", "basic")
             include_domains = kwargs.get("include_domains", [])
             exclude_domains = kwargs.get("exclude_domains", [])
-            
+
             # Perform search
             response = client.search(
                 query=query,
@@ -105,9 +108,9 @@ class WebSearchTool:
                 include_domains=include_domains,
                 exclude_domains=exclude_domains,
             )
-            
+
             return self._parse_tavily_results(response)
-            
+
         except ImportError:
             self.logger.error("tavily-python not installed. Run: pip install tavily-python")
             return []
@@ -118,12 +121,12 @@ class WebSearchTool:
     async def _search_brave(self, query: str, **kwargs) -> List[Dict[str, Any]]:
         """
         Search using Brave Search API.
-        
+
         Brave Search is a privacy-focused alternative to Google.
         """
         try:
             import aiohttp
-            
+
             url = "https://api.search.brave.com/res/v1/web/search"
             headers = {
                 "Accept": "application/json",
@@ -134,7 +137,7 @@ class WebSearchTool:
                 "q": query,
                 "count": self.max_results,
             }
-            
+
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers, params=params) as response:
                     if response.status == 200:
@@ -143,7 +146,7 @@ class WebSearchTool:
                     else:
                         self.logger.error(f"Brave API error: {response.status}")
                         return []
-                        
+
         except ImportError:
             self.logger.error("aiohttp not installed. Run: pip install aiohttp")
             return []
@@ -154,13 +157,13 @@ class WebSearchTool:
     def _parse_tavily_results(self, response: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Parse Tavily API response into standard format.
-        
+
         Tavily returns:
         - results: list of search results
         - answer: AI-generated answer (optional)
         """
         results = []
-        
+
         for item in response.get("results", []):
             results.append({
                 "title": item.get("title", ""),
@@ -169,19 +172,19 @@ class WebSearchTool:
                 "score": item.get("score", 0.0),
                 "published_date": item.get("published_date"),
             })
-        
+
         return results
 
     def _parse_brave_results(self, response: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         Parse Brave API response into standard format.
-        
+
         Brave returns web results in different format than Tavily.
         """
         results = []
-        
+
         web_results = response.get("web", {}).get("results", [])
-        
+
         for item in web_results:
             results.append({
                 "title": item.get("title", ""),
@@ -190,7 +193,7 @@ class WebSearchTool:
                 "score": 1.0,  # Brave doesn't provide scores
                 "published_date": item.get("age"),  # Relative date like "2 days ago"
             })
-        
+
         return results
 
     def _filter_results(
@@ -200,11 +203,11 @@ class WebSearchTool:
     ) -> List[Dict[str, Any]]:
         """
         Filter results based on relevance score.
-        
+
         Args:
             results: List of search results
             min_score: Minimum score threshold (0-1)
-            
+
         Returns:
             Filtered list of results
         """
@@ -212,33 +215,70 @@ class WebSearchTool:
 
 
 # Synchronous wrapper for use with AutoGen tools
-def web_search(query: str, provider: str = "tavily", max_results: int = 5) -> str:
+def web_search(query: str, max_results: int = 5) -> str:
     """
     Synchronous wrapper for web search (for AutoGen tool integration).
-    
+
+    This function is used by AutoGen agents. The provider is determined automatically
+    from available API keys (prefers Tavily if available).
+
     Args:
-        query: Search query
-        provider: "tavily" or "brave"
-        max_results: Maximum results to return
-        
+        query: Search query string (required)
+        max_results: Maximum number of results to return (optional, default: 5)
+
     Returns:
-        Formatted string with search results
+        Formatted string with search results, or an error message if no API key is found
     """
-    tool = WebSearchTool(provider=provider, max_results=max_results)
-    results = asyncio.run(tool.search(query))
-    
-    if not results:
-        return "No search results found."
-    
-    # Format results as readable text
-    output = f"Found {len(results)} web search results for '{query}':\n\n"
-    
-    for i, result in enumerate(results, 1):
-        output += f"{i}. {result['title']}\n"
-        output += f"   URL: {result['url']}\n"
-        output += f"   {result['snippet']}\n"
-        if result.get('published_date'):
-            output += f"   Published: {result['published_date']}\n"
-        output += "\n"
-    
-    return output
+    logger.info(f"web_search called with query: '{query}', max_results: {max_results}")
+
+    try:
+        # Determine provider from available API keys
+        tavily_key = os.getenv("TAVILY_API_KEY")
+        brave_key = os.getenv("BRAVE_API_KEY")
+
+        if tavily_key:
+            provider = "tavily"
+            logger.debug("Using Tavily provider")
+        elif brave_key:
+            provider = "brave"
+            logger.debug("Using Brave provider")
+        else:
+            logger.error("No search API key found")
+            return "Error: No search API key found. Please set TAVILY_API_KEY or BRAVE_API_KEY in your .env file."
+
+        tool = WebSearchTool(provider=provider, max_results=max_results)
+        logger.debug(f"Executing search with {provider}")
+        results = asyncio.run(tool.search(query))
+
+        if not results:
+            logger.info("No search results found")
+            return "No search results found."
+
+        logger.info(f"Found {len(results)} search results")
+
+        # Filter to top 5 most relevant results (by score)
+        # Sort by relevance score (descending) and take top 5
+        sorted_results = sorted(
+            results,
+            key=lambda x: x.get('score', 0.0),
+            reverse=True
+        )[:5]
+
+        # Format results as readable text (only top 5)
+        output = f"Found {len(results)} web search results for '{query}'. Showing top {len(sorted_results)} most relevant:\n\n"
+
+        for i, result in enumerate(sorted_results, 1):
+            output += f"{i}. {result['title']}\n"
+            output += f"   URL: {result['url']}\n"
+            # Truncate snippet to 100 chars to reduce length
+            snippet = result['snippet'][:100] + "..." if len(result['snippet']) > 100 else result['snippet']
+            output += f"   {snippet}\n"
+            if result.get('published_date'):
+                output += f"   Published: {result['published_date']}\n"
+            output += "\n"
+
+        logger.debug(f"Returning formatted output (length: {len(output)})")
+        return output
+    except Exception as e:
+        logger.error(f"Error in web_search: {e}", exc_info=True)
+        return f"Error performing web search: {str(e)}"
