@@ -1,0 +1,20 @@
+EVALUATION SUMMARY
+======================================================================
+
+Total Queries: 8
+Successful: 8
+Failed: 0
+Success Rate: 100.00%
+
+Overall Average Score: 0.588
+
+Scores by Judge Perspective:
+  comprehensive_rubric: 0.593
+  ethical_expert: 0.583
+
+Scores by Criterion:
+  factual_accuracy_and_consistency: 0.497
+  clarity_and_organization: 0.568
+  relevance_and_coverage: 0.530
+  evidence_use_and_citation_quality: 0.512
+  safety_compliance: 0.951
