@@ -8,16 +8,14 @@ import logging
 from datetime import datetime
 import json
 
+from .input_guardrail import InputGuardrail
+from .output_guardrail import OutputGuardrail
+
 
 class SafetyManager:
     """
     Manages safety guardrails for the multi-agent system.
-
-    TODO: YOUR CODE HERE
-    - Integrate with Guardrails AI or NeMo Guardrails
-    - Define safety policies
-    - Implement logging of safety events
-    - Handle different violation types with appropriate responses
+    Coordinates InputGuardrail and OutputGuardrail using Guardrails AI.
     """
 
     def __init__(self, config: Dict[str, Any]):
@@ -25,7 +23,7 @@ class SafetyManager:
         Initialize safety manager.
 
         Args:
-            config: Safety configuration
+            config: Safety configuration (should include system config for topic)
         """
         self.config = config
         self.enabled = config.get("enabled", True)
@@ -43,16 +41,28 @@ class SafetyManager:
             "off_topic_queries"
         ])
 
-        # Violation response strategy
+        # Response strategies configuration
+        self.response_strategies = config.get("response_strategies", {})
         self.on_violation = config.get("on_violation", {})
 
-        # TODO: Initialize guardrail framework
-        # Examples:
-        # from guardrails import Guard
-        # self.guard = Guard(...)
-        # OR
-        # from nemoguardrails import RailsConfig
-        # self.rails = RailsConfig(...)
+        # Initialize guardrails
+        if self.enabled:
+            try:
+                # Create full config dict for guardrails (include system config)
+                guardrail_config = {
+                    "system": config.get("system", {}),
+                    **config
+                }
+                self.input_guardrail = InputGuardrail(guardrail_config)
+                self.output_guardrail = OutputGuardrail(guardrail_config)
+                self.logger.info("Guardrails initialized successfully")
+            except Exception as e:
+                self.logger.error(f"Failed to initialize guardrails: {e}")
+                self.input_guardrail = None
+                self.output_guardrail = None
+        else:
+            self.input_guardrail = None
+            self.output_guardrail = None
 
     def check_input_safety(self, query: str) -> Dict[str, Any]:
         """
@@ -62,52 +72,56 @@ class SafetyManager:
             query: User query to check
 
         Returns:
-            Dictionary with 'safe' boolean and optional 'violations' list
-
-        TODO: YOUR CODE HERE
-        - Implement guardrail checks
-        - Detect harmful/inappropriate content
-        - Detect off-topic queries
-        - Return detailed violation information
+            Dictionary with 'safe' boolean, 'violations' list, and optional 'sanitized_query'
         """
-        if not self.enabled:
+        if not self.enabled or not self.input_guardrail:
             return {"safe": True}
 
-        # TODO: Implement actual safety checks
-        # Example using Guardrails AI:
-        # result = self.guard.validate(query)
-        # if result.validation_passed:
-        #     return {"safe": True}
-        # else:
-        #     return {
-        #         "safe": False,
-        #         "violations": result.errors,
-        #         "sanitized_query": result.validated_output
-        #     }
+        # Validate using InputGuardrail
+        validation_result = self.input_guardrail.validate(query)
 
-        # Placeholder implementation with simple keyword checks
-        violations = []
+        violations = validation_result.get("violations", [])
+        sanitized_query = validation_result.get("sanitized_input", query)
+        is_safe = validation_result.get("valid", True)
 
-        # Check for prohibited keywords (very basic example)
-        prohibited_keywords = ["hack", "attack", "exploit", "bypass"]
-        for keyword in prohibited_keywords:
-            if keyword.lower() in query.lower():
-                violations.append({
-                    "category": "potentially_harmful",
-                    "reason": f"Query contains prohibited keyword: {keyword}",
-                    "severity": "medium"
-                })
+        # Apply response strategy based on violations
+        if violations:
+            strategy_result = self._apply_strategy(violations, query, "input")
 
-        is_safe = len(violations) == 0
+            # Update based on strategy
+            if strategy_result.get("action") == "refuse":
+                is_safe = False
+                sanitized_query = None
+            elif strategy_result.get("action") == "sanitize":
+                sanitized_query = strategy_result.get("sanitized_content", sanitized_query)
+            elif strategy_result.get("action") == "redirect":
+                # For redirect, we still mark as unsafe but allow with message
+                is_safe = False
+                sanitized_query = None
 
         # Log safety event
         if not is_safe and self.log_events:
             self._log_safety_event("input", query, violations, is_safe)
 
-        return {
+        # Get strategy message if violations exist
+        strategy_message = None
+        if violations:
+            strategy_result = self._apply_strategy(violations, query, "input")
+            strategy_message = strategy_result.get("message")
+
+        result = {
             "safe": is_safe,
             "violations": violations
         }
+
+        if sanitized_query:
+            result["sanitized_query"] = sanitized_query
+
+        # Always include message if available (especially for refused queries)
+        if strategy_message:
+            result["message"] = strategy_message
+
+        return result
 
     def check_output_safety(self, response: str) -> Dict[str, Any]:
         """
@@ -117,60 +131,149 @@ class SafetyManager:
             response: Generated response to check
 
         Returns:
-            Dictionary with 'safe' boolean and optional 'violations' list
-
-        TODO: YOUR CODE HERE
-        - Implement output guardrail checks
-        - Detect harmful content in responses
-        - Detect potential misinformation
-        - Sanitize or redact unsafe content
+            Dictionary with 'safe' boolean, 'violations' list, and 'response' (sanitized or refusal message)
         """
-        if not self.enabled:
+        if not self.enabled or not self.output_guardrail:
             return {"safe": True, "response": response}
 
-        # TODO: Implement actual output safety checks
-        # Example checks:
-        # - No PII (personal identifiable information)
-        # - No harmful instructions
-        # - Factual consistency
-        # - No bias or offensive language
+        # Validate using OutputGuardrail
+        validation_result = self.output_guardrail.validate(response)
 
-        violations = []
+        violations = validation_result.get("violations", [])
+        sanitized_output = validation_result.get("sanitized_output", response)
+        is_safe = validation_result.get("valid", True)
 
-        # Placeholder implementation
-        is_safe = len(violations) == 0
+        # Apply response strategy based on violations
+        final_response = response
+        if violations:
+            strategy_result = self._apply_strategy(violations, response, "output")
+
+            # Update based on strategy
+            if strategy_result.get("action") == "refuse":
+                is_safe = False
+                final_response = strategy_result.get("message",
+                    self.on_violation.get("message", "I cannot provide this response due to safety policies."))
+            elif strategy_result.get("action") == "sanitize":
+                final_response = strategy_result.get("sanitized_content", sanitized_output)
+                # Check if sanitization was successful (not too much removed)
+                if len(final_response) < len(response) * 0.5:  # If more than 50% removed
+                    # Fallback to refuse if configured
+                    strategy = self._get_response_strategy(violations[0].get("validator", ""), "output")
+                    if strategy.get("fallback_to_refuse", False):
+                        is_safe = False
+                        final_response = strategy.get("message",
+                            self.on_violation.get("message", "I cannot provide this response due to safety policies."))
 
         # Log safety event
         if not is_safe and self.log_events:
             self._log_safety_event("output", response, violations, is_safe)
 
-        result = {
+        return {
             "safe": is_safe,
             "violations": violations,
-            "response": response
+            "response": final_response
         }
-
-        # Apply sanitization if configured
-        if not is_safe:
-            action = self.on_violation.get("action", "refuse")
-            if action == "sanitize":
-                result["response"] = self._sanitize_response(response, violations)
-            elif action == "refuse":
-                result["response"] = self.on_violation.get(
-                    "message",
-                    "I cannot provide this response due to safety policies."
-                )
-
-        return result
 
     def _sanitize_response(self, response: str, violations: List[Dict[str, Any]]) -> str:
         """
         Sanitize response by removing or redacting unsafe content.
 
-        TODO: YOUR CODE HERE Implement sanitization logic
+        Args:
+            response: Response to sanitize
+            violations: List of violations to address
+
+        Returns:
+            Sanitized response
         """
-        # Placeholder
-        return "[REDACTED] " + response
+        # Use OutputGuardrail's sanitization
+        if self.output_guardrail:
+            return self.output_guardrail._sanitize(response, violations)
+
+        # Fallback sanitization
+        sanitized = response
+        for violation in violations:
+            if violation.get("validator") == "detect_pii":
+                matches = violation.get("matches", [])
+                for match in matches:
+                    sanitized = sanitized.replace(match, "[REDACTED]")
+
+        return sanitized
+
+    def _get_response_strategy(self, validator_name: str, violation_type: str) -> Dict[str, Any]:
+        """
+        Get response strategy for a specific validator.
+
+        Args:
+            validator_name: Name of the validator (e.g., "toxic_language")
+            violation_type: "input" or "output"
+
+        Returns:
+            Strategy configuration dict
+        """
+        # Look up in response_strategies config
+        strategies = self.response_strategies.get(violation_type, {})
+        strategy = strategies.get(validator_name)
+
+        if strategy:
+            return strategy
+
+        # Fall back to default
+        return self.response_strategies.get("default", {
+            "action": self.on_violation.get("action", "refuse"),
+            "message": self.on_violation.get("message", "I cannot process this request due to safety policies.")
+        })
+
+    def _apply_strategy(
+        self,
+        violations: List[Dict[str, Any]],
+        content: str,
+        content_type: str
+    ) -> Dict[str, Any]:
+        """
+        Apply response strategy based on violations.
+
+        Args:
+            violations: List of violations
+            content: Original content
+            content_type: "input" or "output"
+
+        Returns:
+            Dict with 'action', 'message', and optionally 'sanitized_content'
+        """
+        if not violations:
+            return {"action": "allow", "message": None}
+
+        # Find highest severity violation
+        severity_order = {"high": 3, "medium": 2, "low": 1}
+        highest_severity_violation = max(
+            violations,
+            key=lambda v: severity_order.get(v.get("severity", "low"), 1)
+        )
+
+        validator_name = highest_severity_violation.get("validator", "")
+        strategy = self._get_response_strategy(validator_name, content_type)
+
+        action = strategy.get("action", "refuse")
+        message = strategy.get("message",
+            self.on_violation.get("message", "I cannot process this request due to safety policies."))
+
+        result = {
+            "action": action,
+            "message": message
+        }
+
+        # If sanitize, get sanitized content
+        if action == "sanitize":
+            if content_type == "input" and self.input_guardrail:
+                validation_result = self.input_guardrail.validate(content)
+                result["sanitized_content"] = validation_result.get("sanitized_input", content)
+            elif content_type == "output" and self.output_guardrail:
+                validation_result = self.output_guardrail.validate(content)
+                result["sanitized_content"] = validation_result.get("sanitized_output", content)
+            else:
+                result["sanitized_content"] = content
+
+        return result
 
     def _log_safety_event(
         self,

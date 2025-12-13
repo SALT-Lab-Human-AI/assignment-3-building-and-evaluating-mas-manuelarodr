@@ -12,11 +12,14 @@ import os
 import logging
 import asyncio
 
+# Set up logger for paper search
+logger = logging.getLogger("tools.paper_search")
+
 
 class PaperSearchTool:
     """
     Tool for searching academic papers via Semantic Scholar API.
-    
+
     Semantic Scholar provides free access to academic papers with
     rich metadata including citations, abstracts, and author information.
     API key is optional but recommended for higher rate limits.
@@ -34,7 +37,7 @@ class PaperSearchTool:
 
         # API key is optional for Semantic Scholar
         self.api_key = os.getenv("SEMANTIC_SCHOLAR_API_KEY")
-        
+
         if not self.api_key:
             self.logger.info("No Semantic Scholar API key found. Using anonymous access (lower rate limits)")
 
@@ -75,29 +78,29 @@ class PaperSearchTool:
 
         try:
             from semanticscholar import SemanticScholar
-            
+
             # Initialize Semantic Scholar client
             sch = SemanticScholar(api_key=self.api_key)
-            
+
             # Define fields to retrieve
             fields = kwargs.get("fields", [
                 "paperId", "title", "authors", "year", "abstract",
                 "citationCount", "url", "venue", "openAccessPdf"
             ])
-            
+
             # Perform search
             results = sch.search_paper(
-                query, 
+                query,
                 limit=self.max_results,
                 fields=fields
             )
-            
+
             # Parse and filter results
             papers = self._parse_results(results, year_from, year_to, min_citations)
-            
+
             self.logger.info(f"Found {len(papers)} papers")
             return papers
-            
+
         except ImportError:
             self.logger.error("semanticscholar library not installed. Run: pip install semanticscholar")
             return []
@@ -117,10 +120,10 @@ class PaperSearchTool:
         """
         try:
             from semanticscholar import SemanticScholar
-            
+
             sch = SemanticScholar(api_key=self.api_key)
             paper = sch.get_paper(paper_id)
-            
+
             return {
                 "paper_id": paper.paperId,
                 "title": paper.title,
@@ -149,11 +152,11 @@ class PaperSearchTool:
         """
         try:
             from semanticscholar import SemanticScholar
-            
+
             sch = SemanticScholar(api_key=self.api_key)
             paper = sch.get_paper(paper_id)
             citations = paper.citations[:limit] if paper.citations else []
-            
+
             return [
                 {
                     "paper_id": c.paperId,
@@ -179,11 +182,11 @@ class PaperSearchTool:
         """
         try:
             from semanticscholar import SemanticScholar
-            
+
             sch = SemanticScholar(api_key=self.api_key)
             paper = sch.get_paper(paper_id)
             references = paper.references[:limit] if paper.references else []
-            
+
             return [
                 {
                     "paper_id": r.paperId,
@@ -205,23 +208,23 @@ class PaperSearchTool:
     ) -> List[Dict[str, Any]]:
         """
         Parse and filter search results from Semantic Scholar.
-        
+
         Args:
             results: Raw results from Semantic Scholar API
             year_from: Minimum year filter
             year_to: Maximum year filter
             min_citations: Minimum citation count filter
-            
+
         Returns:
             Filtered and formatted list of papers
         """
         papers = []
-        
+
         for paper in results:
             # Skip papers without basic metadata
             if not paper or not hasattr(paper, 'title'):
                 continue
-                
+
             paper_dict = {
                 "paper_id": paper.paperId if hasattr(paper, 'paperId') else None,
                 "title": paper.title if hasattr(paper, 'title') else "Unknown",
@@ -233,13 +236,13 @@ class PaperSearchTool:
                 "venue": paper.venue if hasattr(paper, 'venue') else "",
                 "pdf_url": paper.openAccessPdf.get("url") if hasattr(paper, 'openAccessPdf') and paper.openAccessPdf else None,
             }
-            
+
             papers.append(paper_dict)
-        
+
         # Apply filters
         papers = self._filter_by_year(papers, year_from, year_to)
         papers = self._filter_by_citations(papers, min_citations)
-        
+
         return papers
 
     def _filter_by_year(
@@ -269,41 +272,65 @@ class PaperSearchTool:
 def paper_search(query: str, max_results: int = 10, year_from: Optional[int] = None) -> str:
     """
     Synchronous wrapper for paper search (for AutoGen tool integration).
-    
+
     Args:
-        query: Search query
-        max_results: Maximum results to return
-        year_from: Only return papers from this year onwards
-        
+        query: Search query string (required)
+        max_results: Maximum results to return (optional, default: 10)
+        year_from: Only return papers from this year onwards (optional, can be None or omitted)
+
     Returns:
-        Formatted string with paper results
+        Formatted string with paper results, or "No academic papers found." if no results
     """
-    tool = PaperSearchTool(max_results=max_results)
-    results = asyncio.run(tool.search(query, year_from=year_from))
-    
-    if not results:
-        return "No academic papers found."
-    
-    # Format results as readable text
-    output = f"Found {len(results)} academic papers for '{query}':\n\n"
-    
-    for i, paper in enumerate(results, 1):
-        authors = ", ".join([a["name"] for a in paper["authors"][:3]])
-        if len(paper["authors"]) > 3:
-            authors += " et al."
-            
-        output += f"{i}. {paper['title']}\n"
-        output += f"   Authors: {authors}\n"
-        output += f"   Year: {paper['year']} | Citations: {paper['citation_count']}"
-        if paper.get('venue'):
-            output += f" | Venue: {paper['venue']}"
-        output += "\n"
-        
-        if paper.get('abstract'):
-            abstract = paper['abstract'][:200] + "..." if len(paper['abstract']) > 200 else paper['abstract']
-            output += f"   Abstract: {abstract}\n"
-            
-        output += f"   URL: {paper['url']}\n"
-        output += "\n"
-    
-    return output
+    logger.info(f"paper_search called with query: '{query}', max_results: {max_results}, year_from: {year_from}")
+
+    try:
+        tool = PaperSearchTool(max_results=max_results)
+        logger.debug("Executing paper search")
+        results = asyncio.run(tool.search(query, year_from=year_from))
+
+        if not results:
+            logger.info("No academic papers found")
+            return "No academic papers found."
+
+        logger.info(f"Found {len(results)} academic papers")
+
+        # Filter to top 8 most relevant papers (by citation count and recency)
+        # Sort by citation count (descending), then by year (descending)
+        # Handle None values explicitly - .get() returns None if value is None, not the default
+        sorted_results = sorted(
+            results,
+            key=lambda x: (
+                x.get('citation_count') if x.get('citation_count') is not None else 0,
+                x.get('year') if x.get('year') is not None else 0
+            ),
+            reverse=True
+        )[:8]
+
+        # Format results as readable text (only top 8)
+        output = f"Found {len(results)} academic papers for '{query}'. Showing top {len(sorted_results)} most relevant:\n\n"
+
+        for i, paper in enumerate(sorted_results, 1):
+            authors = ", ".join([a["name"] for a in paper["authors"][:3]])
+            if len(paper["authors"]) > 3:
+                authors += " et al."
+
+            output += f"{i}. {paper['title']}\n"
+            output += f"   Authors: {authors}\n"
+            output += f"   Year: {paper['year']} | Citations: {paper['citation_count']}"
+            if paper.get('venue'):
+                output += f" | Venue: {paper['venue']}"
+            output += "\n"
+
+            # Truncate abstract more aggressively (50 chars instead of 200)
+            if paper.get('abstract'):
+                abstract = paper['abstract'][:50] + "..." if len(paper['abstract']) > 50 else paper['abstract']
+                output += f"   Abstract: {abstract}\n"
+
+            output += f"   URL: {paper['url']}\n"
+            output += "\n"
+
+        logger.debug(f"Returning formatted output (length: {len(output)})")
+        return output
+    except Exception as e:
+        logger.error(f"Error in paper_search: {e}", exc_info=True)
+        return f"Error performing paper search: {str(e)}"

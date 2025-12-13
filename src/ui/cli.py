@@ -114,15 +114,15 @@ class CLI:
                 print("\n" + "=" * 70)
                 print("Processing your query...")
                 print("=" * 70)
-                
+
                 try:
                     # Process through orchestrator (synchronous call, not async)
                     result = self.orchestrator.process_query(query)
                     self.query_count += 1
-                    
+
                     # Display result
                     self._display_result(result)
-                    
+
                 except Exception as e:
                     print(f"\nError processing query: {e}")
                     logging.exception("Error processing query")
@@ -161,7 +161,7 @@ class CLI:
     def _clear_screen(self):
         """Clear the terminal screen."""
         import os
-        os.system('clear' if os.name == 'posix' else 'cls')
+        os.system('clear' if os.name == 'posix' else 'cls')  # nosec B605 - Safe CLI utility, no user input
 
     def _print_stats(self):
         """Print system statistics."""
@@ -210,22 +210,22 @@ class CLI:
             self._display_conversation_summary(result.get("conversation_history", []))
 
         print("=" * 70 + "\n")
-    
+
     def _extract_citations(self, result: Dict[str, Any]) -> list:
         """Extract citations/URLs from conversation history."""
         citations = []
-        
+
         for msg in result.get("conversation_history", []):
             content = msg.get("content", "")
-            
+
             # Find URLs in content
             import re
             urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]+', content)
-            
+
             for url in urls:
                 if url not in citations:
                     citations.append(url)
-        
+
         return citations[:10]  # Limit to top 10
 
     def _should_show_traces(self) -> bool:
@@ -237,19 +237,19 @@ class CLI:
         """Display a summary of the agent conversation."""
         if not conversation_history:
             return
-            
+
         print("\n" + "-" * 70)
         print("🔍 CONVERSATION SUMMARY")
         print("-" * 70)
-        
+
         for i, msg in enumerate(conversation_history, 1):
             agent = msg.get("source", "Unknown")
             content = msg.get("content", "")
-            
+
             # Truncate long content
             preview = content[:150] + "..." if len(content) > 150 else content
             preview = preview.replace("\n", " ")
-            
+
             print(f"\n{i}. {agent}:")
             print(f"   {preview}")
 
